@@ -1,0 +1,226 @@
+Clustering of stocks by return and volatility
+import numpy as np 
+import pandas as pd
+import pandas_datareader as dr
+import yfinance as yf
+
+from pylab import plot,show
+from matplotlib import pyplot as plt
+import plotly.express as px
+
+from numpy.random import rand
+from scipy.cluster.vq import kmeans,vq
+from math import sqrt
+from sklearn.cluster import KMeans 
+from sklearn import preprocessing
+sp500_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+
+# Read in the URL and scrape ticker data
+data_table = pd.read_html(sp500_url)
+tickers = data_table[0]['Symbol'].values.tolist()
+tickers = [s.replace('\n', '') for s in tickers]
+tickers = [s.replace('.', '-') for s in tickers]
+tickers = [s.replace(' ', '') for s in tickers]
+
+# Download prices
+prices_list = []
+for ticker in tickers:
+    try:
+        prices = yf.download(ticker, start='2020-01-01')['Adj Close']
+        prices = pd.DataFrame(prices)
+        prices.columns = [ticker]
+        prices_list.append(prices)
+    except Exception as e:
+        print(f"Error downloading data for {ticker}: {e}")
+
+# Concatenate all the price dataframes into one dataframe
+prices_df = pd.concat(prices_list, axis=1)
+prices_df.sort_index(inplace=True)
+
+# Calculate daily returns
+returns_df = prices_df.pct_change()
+
+# Create an empty dataframe for annualized returns and volatility
+metrics = pd.DataFrame(index=returns_df.columns)
+
+# Calculate annualized returns
+metrics['Returns'] = returns_df.mean() * 252
+
+# Calculate annualized volatility
+metrics['Volatility'] = returns_df.std() * sqrt(252)
+
+# Display the resulting dataframe
+print(metrics)
+data = np.asarray([metrics['Returns'], metrics['Volatility']]).T
+X = data
+
+# Generate the elbow curve to determine the optimal number of clusters
+distortions = []
+for k in range(2, 20):
+    k_means = KMeans(n_clusters=k, random_state=42)
+    k_means.fit(X)
+    distortions.append(k_means.inertia_)
+
+# Plot the elbow curve
+fig = plt.figure(figsize=(15, 5))
+plt.plot(range(2, 20), distortions, marker='o')
+plt.grid(True)
+plt.title('Elbow Curve for Optimal k')
+plt.xlabel('Number of clusters (k)')
+plt.ylabel('Distortion (Inertia)')
+plt.show()
+kmeans = KMeans(n_clusters=4, random_state=42)
+kmeans.fit(data)
+
+# Assign each sample to a cluster
+clusters = kmeans.labels_
+
+# Create a dataframe with the tickers and the clusters they belong to
+details = [(ticker, cluster) for ticker, cluster in zip(metrics.index, clusters)]
+details_df = pd.DataFrame(details, columns=['Ticker', 'Cluster'])
+
+# Reset the index of the metrics dataframe to include the ticker names
+metrics = metrics.reset_index()
+metrics.rename(columns={'index': 'Ticker'}, inplace=True)
+
+# Merge the clusters information from the dataframe 'details_df'
+clusters_df = metrics.merge(details_df, on='Ticker')
+
+# Display the resulting dataframe
+print(clusters_df)
+
+# Plot the clusters
+plt.figure(figsize=(10, 8))
+plt.scatter(clusters_df['Returns'], clusters_df['Volatility'], c=clusters_df['Cluster'], cmap='viridis', marker='o')
+plt.title('K-means Clustering of S&P 500 Companies')
+plt.xlabel('Annualized Returns')
+plt.ylabel('Annualized Volatility')
+plt.colorbar(label='Cluster')
+plt.show()fig = px.scatter(clusters_df, x="Returns", y="Volatility", color="Cluster", hover_data=["Ticker"])
+fig.update(layout_coloraxis_showscale=False)
+fig.show()
+
+Clustering of shares by price-earnings ratio and dividend rate
+import pandas as pd
+import yfinance as yf
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import MaxAbsScaler
+import matplotlib.pyplot as plt
+import plotly.express as px
+
+def get_stock_data(tickers):
+    """Fetches stock data (trailing PE and dividend rate) for given tickers.
+
+    Args:
+        tickers (list): List of stock tickers.
+
+    Returns:
+        pd.DataFrame: DataFrame containing trailing PE, dividend rate, and market cap (if available).
+    """
+
+    sp_features_df = pd.DataFrame(columns=['Ticker', 'trailingPE', 'dividendRate', 'marketCap'])
+    sp_features_df['Ticker'] = tickers
+
+    for t in tickers:
+        try:
+            tick = yf.Ticker(t)
+            ticker_info = tick.info
+            trailingPE = ticker_info.get('trailingPE', 'na')
+            dividendRate = ticker_info.get('dividendRate', 0)  # Handle missing values with 0
+            marketCap = ticker_info.get('marketCap', None)  # Include market cap if available
+            sp_features_df.loc[sp_features_df['Ticker'] == t, ['trailingPE', 'dividendRate', 'marketCap']] = [trailingPE, dividendRate, marketCap]
+        except Exception as e:
+            print(f"Error retrieving data for {t}: {e}")
+
+    return sp_features_df
+
+def clean_and_prepare_data(data):
+    """Cleans and prepares data for clustering.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing stock data.
+
+    Returns:
+        pd.DataFrame: Cleaned and prepared DataFrame.
+    """
+
+    # Filter out rows with missing trailing PE
+    data = data.dropna(subset=['trailingPE'])
+
+    # Convert trailing PE to float
+    data['trailingPE'] = data['trailingPE'].astype(float)
+
+    # Fill missing dividend rates with 0 (no dividend)
+    data["dividendRate"] = data["dividendRate"].fillna(0)
+
+    return data
+
+def perform_k_means_clustering(data, n_clusters_range):
+    """Performs K-Means clustering with elbow method to determine optimal number of clusters.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing cleaned and prepared data.
+        n_clusters_range (int): Range of cluster numbers to explore (e.g., 2 to 20).
+
+    Returns:
+        tuple: Tuple containing the fitted KMeans model and the optimal number of clusters.
+    """
+
+    distortions = []
+    for k in range(2, n_clusters_range + 1):
+        kmeans = KMeans(n_clusters=k, random_state=42)  # Set random state for reproducibility
+        kmeans.fit(data)
+        distortions.append(kmeans.inertia_)
+
+    # Plot the elbow curve
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(2, n_clusters_range + 1), distortions)
+    plt.grid(True)
+    plt.xlabel('Number of clusters')
+    plt.ylabel('Distortion (Inertia)')
+    plt.title('Elbow Curve')
+    plt.show()
+
+    # Determine optimal_k based on the elbow curve
+    # For simplicity, we will choose 3 as the optimal number of clusters
+    optimal_k = 3
+
+    # Perform K-Means clustering with the optimal number of clusters
+    kmeans = KMeans(n_clusters=optimal_k, random_state=42)
+    kmeans.fit(data)
+
+    return kmeans, optimal_k
+
+def visualize_clusters(data, kmeans):
+    """Visualizes the clusters using Plotly.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing cleaned and prepared data.
+        kmeans (sklearn.cluster.KMeans): Fitted KMeans model.
+    """
+
+    # Assign cluster labels to data points
+    data['Cluster'] = kmeans.predict(data[['trailingPE', 'dividendRate']])
+
+    # Create a scatter plot using Plotly
+    fig = px.scatter(
+        data, x='dividendRate', y='trailingPE', color='Cluster', hover_data=['Ticker']
+    )
+    fig.update_layout(title='Clusters of Stocks based on PE Ratio and Dividend Rate')
+    fig.show()
+
+# Example usage:
+tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'JNJ', 'V', 'WMT', 'PG', 'DIS']
+
+# Step 1: Get the stock data
+stock_data = get_stock_data(tickers)
+
+# Step 2: Clean and prepare the data
+cleaned_data = clean_and_prepare_data(stock_data)
+
+# Step 3: Perform K-Means clustering
+kmeans_model, optimal_k = perform_k_means_clustering(cleaned_data[['trailingPE', 'dividendRate']], n_clusters_range=10)
+
+# Step 4: Visualize the clusters
+visualize_clusters(cleaned_data, kmeans_model)
+
